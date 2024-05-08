@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en" class="h-100" data-bs-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TarrasK Scanner</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+
+    <style>
+        #reader,
+        #reader-loader {
+            width: 100%;
+            max-width: 900px;
+            aspect-ratio: 1.5;
+        }
+
+        #reader {
+            background-color: var(--bs-dark-bg-subtle);
+        }
+
+        .cursor-pointer {
+            cursor: pointer;
+        }
+        .cursor-pointer:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+
+
+<body class="d-flex flex-column h-100">
+
+    <main class="flex-shrink-0">
+        <div class="container">
+            <h1 class="mt-3">
+                <a href="https://github.com/s3ansh33p/TarrasK/tree/qr-code" target="_blank"
+                    referrerpolicy="no-referrer">TarrasK</a> Scanner
+            </h1>
+
+            <div class="row">
+                <div class="col mt-3 col-12 col-md-6">
+                    <div class="d-flex justify-content-center position-relative">
+                        <div id="reader"></div>
+                        <div id="reader-loader"
+                            class="position-absolute d-flex justify-content-center align-items-center">
+                            <div class="d-flex justify-content-center align-items-center flex-column text-body-secondary h-100"
+                                id="scan-status-container">
+                                <button class="btn btn-primary" id="startScan">Start Scanner</button>
+                                <div class="spinner-border d-none" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <span id="scan-status" class="mt-2"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-center">
+                        <select id="cameraSelection" class="form-select form-select-sm mt-2"></select>
+                    </div>
+                </div>
+
+                <div class="col mt-3 col-12 col-md-6 d-flex align-content-start flex-column">
+                    <div class="row mt-3">
+                        <div class="col">
+                            <h3>Registers</h3>
+                            <div class="row" id="registers">
+                            </div>
+                        </div>
+                    </div>
+                    <textarea class="form-control mt-2" placeholder="Raw Data" id="scannedData" 
+                        style="height: 60px"></textarea>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+
+        window.lastQRCode = null;
+
+        function generateRegisterElements(register, value) {
+            const registerElement = document.createElement('div');
+            registerElement.classList.add('col-6');
+            registerElement.innerHTML = `<div class="d-flex justify-content-between cursor-pointer" onclick="handle(this)">
+                <span>${register}</span>
+                <span>${value}</span>
+            </div>`;
+            return registerElement;
+        }
+
+        function handle(el) {
+            // log value and copy to clipboard
+            const text = el.children[1].innerText;
+            console.log(text);
+            navigator.clipboard.writeText(text).then(() => {
+                console.log('Text copied to clipboard');
+            }).catch(err => {
+                console.log('Error copying text to clipboard', err);
+            });
+        }
+
+        function parseResult(result) {
+            // check if same QR code scanned again
+            if (window.lastQRCode === result) {
+                return;
+            }
+            window.lastQRCode = result;
+
+            // remove start and end
+            const start = 'START DUMP';
+            const end = 'END DUMP';
+            const startIndex = result.indexOf(start);
+            const endIndex = result.indexOf(end);
+            const parsedDump = {};
+            // raw result will have tabs so can be copy pasted nicely
+            let rawResult = "";
+            if (startIndex !== -1 && endIndex !== -1) {
+                const dump = result.substring(startIndex + start.length, endIndex).trim();
+                const dumpLines = dump.split(' ');
+                document.getElementById('registers').innerHTML = '';
+                for (let i = 0; i < dumpLines.length / 2; i++) {
+                    const register = dumpLines[i * 2].replace(':', '');
+                    const value = dumpLines[i * 2 + 1];
+                    parsedDump[register] = value;
+                    // add to registers
+                    document.getElementById('registers').appendChild(generateRegisterElements(register, value));
+                    // raw result
+                    rawResult += `${register}: ${value}`;
+                    if (i % 2 === 1) {
+                        rawResult += '\n';
+                    } else {
+                        rawResult += '\t';
+                    }
+                }
+            } else {
+                alert('Invalid QR Code');
+            }
+            // set raw result
+            document.getElementById('scannedData').value = rawResult;
+        }
+
+        document.getElementById('startScan').addEventListener('click', () => {
+            setupCamera();
+        });
+
+        function setStatusBar(status, error = false) {
+            document.getElementById('scan-status').innerText = `(${status})`;
+            if (error) {
+                document.getElementById('scan-status-container').classList.add('text-warning');
+                document.getElementById('scan-status-container').classList.remove('text-body-secondary');
+            }
+        }
+
+        function hideLoader() {
+            document.getElementById('reader-loader').classList.add('d-none');
+        }
+
+        function showLoader() {
+            document.getElementById('reader-loader').classList.remove('d-none');
+        }
+
+        // on change listener to change camera
+        document.getElementById('cameraSelection').addEventListener('change', (event) => {
+            // show loader
+            setStatusBar('Changing Camera');
+            showLoader();
+            window.cameraId = event.target.value;
+            window.scanner.stop().then(() => {
+                startScanner();
+            }).catch(err => {
+                console.log('err', err);
+                setStatusBar('Failed to Start Camera', true);
+            });
+        });
+
+        function setupCamera() {
+            setStatusBar('Getting Cameras');
+            Html5Qrcode.getCameras().then(cameras => {
+                if (cameras && cameras.length) {
+                    window.cameraId = cameras[0].id;
+                    // add to selection
+                    cameras.forEach(camera => {
+                        const cameraOption = document.createElement('option');
+                        cameraOption.value = camera.id;
+                        cameraOption.innerText = camera.label;
+                        document.getElementById('cameraSelection').appendChild(cameraOption);
+                    });
+                    // if multiple, prioritize back camera
+                    if (cameras.length > 1) {
+                        for (let i = 0; i < cameras.length; i++) {
+                            if (cameras[i].label.toLowerCase().includes('back')) {
+                                window.cameraId = cameras[i].id;
+                                // set camera selected value
+                                document.getElementById('cameraSelection').value = cameras[i].id;
+                                break;
+                            }
+                        }
+                    }
+                    setStatusBar('Starting Camera');
+                    console.log('cameras', cameras);
+                    createScanner();
+                }
+            }).catch(err => {
+                const inUse = "NotReadableError: Could not start video source";
+                const notAllowed = "NotAllowedError: Permission denied";
+                if (err.toString() === inUse) {
+                    const cameraOption = document.createElement('option');
+                    cameraOption.value = 'error';
+                    cameraOption.innerText = 'No Camera Available - Please Close Other Apps Using Camera';
+                    document.getElementById('cameraSelection').appendChild(cameraOption);
+                    setStatusBar('No Camera Available', true);
+                } else if (err.toString() === notAllowed) {
+                    const cameraOption = document.createElement('option');
+                    cameraOption.value = 'error';
+                    cameraOption.innerText = 'Camera Permissions Denied - Please Allow in Browser Settings';
+                    document.getElementById('cameraSelection').appendChild(cameraOption);
+                    setStatusBar('Camera Permissions Denied', true);
+                } else {
+                    console.log('err', err);
+                    console.log('err.toString()', err.toString());
+                    setStatusBar('Failed to Start Camera', true);
+                }
+            });
+        }
+
+        function createScanner() {
+            const html5QrCode = new Html5Qrcode('reader');
+            window.scanner = html5QrCode;
+            setStatusBar('Starting Scanner');
+            startScanner();
+        }
+
+        async function startScanner() {
+            if (!window.scanner) {
+                // createScanner();
+                console.log("Need to create scanner first");
+            }
+            let qrbox = 500;
+            if (window.innerWidth < 576) {
+                qrbox = 250;
+            } else if (window.innerWidth < 768) {
+                qrbox = 300;
+            } else if (window.innerWidth < 992) {
+                qrbox = 400;
+            }
+            await window.scanner.start(
+                window.cameraId, {
+                fps: 10,
+                qrbox: qrbox,
+                formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE]
+            },
+                qrCodeMessage => {
+                    // pass to callback
+                    parseResult(qrCodeMessage);
+                },
+                errorMessage => {
+                    // pass to callback
+                }
+            ).catch(err => {
+                // handle err
+                console.log('Start Scanner err', err);
+            });
+            hideLoader();
+        }
+
+        function errorCallback(err) {
+            const standardErr = "QR code parse error, error = D: No MultiFormat Readers were able to detect the code."
+            if (err !== standardErr) {
+                console.log('err', err);
+            }
+        }
+    </script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"
+        integrity="sha512-r6rDA7W6ZeQhvl8S7yRVQUKVHdexq+GAlNkNNqVC7YyIV+NwqCTJe2hDWCiffTyRNOeGEzRRJ9ifvRm/HCzGYg=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</body>
+
+</html>
